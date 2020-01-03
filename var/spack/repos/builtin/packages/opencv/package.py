@@ -25,8 +25,10 @@ class Opencv(CMakePackage):
     git      = 'https://github.com/opencv/opencv.git'
 
     version('master', branch='master')
+    version('4.1.1-openvino',      sha256='f91c9f81b24e99d0bcee04182129bd27820118b57cac600598fd296421541298')
+    version('4.1.1',               sha256='5de5d96bdfb9dad6e6061d70f47a0a91cee96bb35afb9afb9ecb3d43e243d217', preferred=True)
     version('4.1.0-openvino', sha256='58764d2487c6fb4cd950fb46483696ae7ae28e257223d6e44e162caa22ee9e5c')
-    version('4.1.0',          sha256='8f6e4ab393d81d72caae6e78bd0fd6956117ec9f006fba55fcdb88caf62989b7', preferred=True)
+    version('4.1.0',          sha256='8f6e4ab393d81d72caae6e78bd0fd6956117ec9f006fba55fcdb88caf62989b7')
     version('4.0.1-openvino', sha256='8cbe32d12a70decad7a8327eb4fba46016a9c47ff3ba6e114d27b450f020716f')
     version('4.0.1',          sha256='7b86a0ee804244e0c407321f895b15e4a7162e9c5c0d2efc85f1cadec4011af4')
     version('4.0.0-openvino', sha256='aa910078ed0b7e17bd10067e04995c131584a6ed6d0dcc9ca44a292aa8e296fc')
@@ -80,7 +82,7 @@ class Opencv(CMakePackage):
     # Optional 3rd party components
     variant('cuda', default=True, description='Activates support for CUDA')
     # Cuda@10.0.130 does not support gcc > 7
-    conflicts('%gcc@7:', when='+cuda')
+    conflicts('%gcc@8:', when='+cuda')
     variant('eigen', default=True, description='Activates support for eigen')
     variant('ipp', default=True, description='Activates support for IPP')
     variant('ipp_iw', default=True, description='Build IPP IW from source')
@@ -99,10 +101,37 @@ class Opencv(CMakePackage):
     variant('vtk', default=True, description='Activates support for VTK')
     variant('zlib', default=True, description='Build zlib from source')
 
+    variant('contrib', default=False, description='Adds in code from opencv_contrib. Maybe necesssary when +cuda.')
+    contrib_vers = ['4.1.0', '4.1.1']
+    for cv in contrib_vers:
+        resource(name="contrib",
+                 git='https://github.com/opencv/opencv_contrib.git',
+                 tag="{0}".format(cv),
+                 when='@{0}+contrib'.format(cv))
+        resource(name="contrib",
+                 git='https://github.com/opencv/opencv_contrib.git',
+                 tag="{0}".format(cv),
+                 when='@{0}+cuda'.format(cv))
+
+    depends_on('hdf5', when='+contrib')
+    depends_on('hdf5', when='+cuda')
+
     # Patch to fix conflict between CUDA and OpenCV (reproduced with 3.3.0
     # and 3.4.1) header file that have the same name.Problem is fixed in
     # the current development branch of OpenCV. See #8461 for more information.
     patch('dnn_cuda.patch', when='@3.3.0:3.4.1+cuda+dnn')
+
+    # CUDA nppi split in to multiple libraries. Only tested with
+    # opencv@3.2.0^cuda@10.0.130 . May be necessary with other version
+    # combinations.
+    # See: https://stackoverflow.com/questions/46584000/cmake-error-variables-are-set-to-notfound
+    patch('nppi_cuda.patch', when='@3.2.0^cuda@9:')
+
+    # CUDA 9+ do not support compute_20. Only tested with
+    # opencv@3.2.0^cuda@10.0.130 . May be necessary with other version
+    # combinations as well.
+    # see: https://stackoverflow.com/questions/48383846/nvcc-fatal-unsupported-gpu-architecture-compute-20-while-cuda-9-1caffeopen
+    patch('detect_cuda.patch', when='@3.2.0^cuda@9:')
 
     depends_on('eigen~mpfr', when='+eigen', type='build')
 
@@ -114,15 +143,18 @@ class Opencv(CMakePackage):
     depends_on('jasper', when='+jasper')
     depends_on('cuda', when='+cuda')
     depends_on('gtkplus', when='+gtk')
-    depends_on('vtk', when='+vtk')
+    depends_on('vtk', when='+vtk~gtk')
+    depends_on('vtk+osmesa', when='+vtk+gtk')
     depends_on('qt', when='+qt')
     depends_on('java', when='+java')
     depends_on('py-numpy', when='+python', type=('build', 'run'))
-    depends_on('protobuf@3.5.0', when='@3.4.1: +dnn')
+    depends_on('protobuf@3.5.0:', when='@3.4.1: +dnn')
     depends_on('protobuf@3.1.0', when='@3.3.0:3.4.0 +dnn')
 
     depends_on('ffmpeg', when='+videoio')
     depends_on('mpi', when='+videoio')
+
+    depends_on('openblas')
 
     extends('python', when='+python')
 
@@ -215,7 +247,15 @@ class Opencv(CMakePackage):
             '-DWITH_PROTOBUF:BOOL={0}'.format((
                 'ON' if '@3.3.0: +dnn' in spec else 'OFF')),
             '-DBUILD_PROTOBUF:BOOL=OFF',
+            '-DPROTOBUF_UPDATE_FILES={0}'.format('ON')
         ])
+
+        args.append('-DOpenBLAS_INCLUDE_DIR={0}'.format(
+            spec['openblas'].prefix.include))
+
+        if '+contrib' in spec or '+cuda' in spec:
+            args.append('-DOPENCV_EXTRA_MODULES_PATH={0}'.format(
+                join_path(self.stage.source_path, 'opencv_contrib/modules')))
 
         # Media I/O
         if '+zlib' in spec:
@@ -294,6 +334,7 @@ class Opencv(CMakePackage):
                 args.extend([
                     '-DBUILD_opencv_python3=ON',
                     '-DPYTHON3_EXECUTABLE={0}'.format(python_exe),
+                    '-DPYTHON_EXECUTABLE={0}'.format(python_exe),
                     '-DPYTHON3_LIBRARY={0}'.format(python_lib),
                     '-DPYTHON3_INCLUDE_DIR={0}'.format(python_include_dir),
                     '-DBUILD_opencv_python2=OFF',
@@ -302,6 +343,7 @@ class Opencv(CMakePackage):
                 args.extend([
                     '-DBUILD_opencv_python2=ON',
                     '-DPYTHON2_EXECUTABLE={0}'.format(python_exe),
+                    '-DPYTHON_EXECUTABLE={0}'.format(python_exe),
                     '-DPYTHON2_LIBRARY={0}'.format(python_lib),
                     '-DPYTHON2_INCLUDE_DIR={0}'.format(python_include_dir),
                     '-DBUILD_opencv_python3=OFF',
