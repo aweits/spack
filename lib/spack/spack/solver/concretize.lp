@@ -201,6 +201,8 @@ variant_not_default(Package, Variant, Value, 0)
     variant_default_value(Package, Variant, Value),
     node(Package).
 
+#heuristic variant_value(Package, Variant, Value) : variant_default_value(Package, Variant, Value). [1, true]
+
 % The default value for a variant in a package is what is written
 % in the package.py file, unless some preference is set in packages.yaml
 variant_default_value(Package, Variant, Value)
@@ -517,10 +519,10 @@ root(Dependency, 1) :- not root(Dependency), node(Dependency).
 
 % For external packages it's more important than for others
 % to match the compiler with their parent node
-#maximize{
-    Weight@10,Package
-    : compiler_version_match(Package, Weight), external(Package)
-}.
+%#maximize{
+%    Weight@10,Package
+%    : compiler_version_match(Package, Weight), external(Package)
+%}.
 
 % Then try to use as much as possible:
 % 1. Default variants

@@ -445,6 +445,169 @@ def _normalize_packages_yaml(packages_yaml):
 
     return normalized_yaml
 
+from clingo import Function, Tuple_
+
+class Observer:
+    def __init__(self, sym={}):
+        self.__delayed = []
+        self.__symbols = sym
+        self.__reified = []
+        self.__terms   = {}
+        self.__elems   = {}
+
+    def __getattr__(self, name):
+        assert(not name.startswith("_"))
+        def caller(*args):
+            self.__delayed.append((name, args))
+        return caller
+
+    def __map(self, lit):
+        sign = False
+        if lit < 0:
+            sign = True
+            lit = -lit
+        ret = self.__symbols.get(lit, Function(str(lit)))
+        if sign:
+            ret = Function("neg", [ret])
+        return ret
+
+    def init_program(self, incremental):
+        self.__reified.append(Function("init_program", [incremental]))
+
+    def begin_step(self):
+        self.__reified.append(Function("begin_step", []))
+
+    def _rule(self, choice, head, body):
+        head = sorted(set([ self.__map(atm) for atm in head ]))
+        body = sorted(set([ self.__map(lit) for lit in body ]))
+        self.__reified.append(Function("rule", [choice, Tuple_(head), Tuple_(body)]))
+
+    def _weight_rule(self, choice, head, lower_bound, body):
+        head = sorted(set([ self.__map(atm) for atm in head ]))
+        body = sorted(set([ Tuple_([self.__map(lit), weight]) for lit, weight in body ]))
+        self.__reified.append(Function("weight_rule", [choice, Tuple_(head), lower_bound, Tuple_(body)]))
+
+    def _minimize(self, priority, literals):
+        literals = sorted(set([ Tuple_([self.__map(lit), weight]) for lit, weight in literals ]))
+        self.__reified.append(Function("minimize", [priority, Tuple_(literals)]))
+
+    def _project(self, atoms):
+        atoms = sorted(set([ self.__map(atm) for atm in atoms ]))
+        self.__reified.append(Function("project", [Tuple_(atoms)]))
+
+    def output_atom(self, symbol, atom):
+        self.__symbols[atom] = symbol
+        self.__reified.append(Function("output_atom", [symbol]))
+
+    def _output_term(self, symbol, condition):
+        condition = sorted(set([ self.__map(lit) for lit in condition ]))
+        self.__reified.append(Function("output_term", [symbol, Tuple_(condition)]))
+
+    def _output_csp(self, symbol, value, condition):
+        condition = sorted(set([ self.__map(lit) for lit in condition ]))
+        self.__reified.append(Function("output_csp", [symbol, value, Tuple_(condition)]))
+
+    def _external(self, atom, value):
+        self.__reified.append(Function("external", [self.__map(atom), str(value)]))
+
+    def _assume(self, literals):
+        literals = sorted(set([ self.__map(lit) for lit in literals ]))
+        self.__reified.append(Function("assume", [Tuple_(literals)]))
+
+    def _heuristic(self, atom, type, bias, priority, condition):
+        condition = sorted(set([ self.__map(lit) for lit in condition ]))
+        self.__reified.append(Function("heuristic", [self.__map(atom), str(type), bias, Tuple_(condition)]))
+
+    def _acyc_edge(self, node_u, node_v, condition):
+        condition = sorted(set([ self.__map(lit) for lit in condition ]))
+        self.__reified.append(Function("acyc_edge", [node_u, node_v, Tuple_(condition)]))
+
+    def theory_term_number(self, term_id, number):
+        self.__terms[term_id] = lambda: number
+
+    def theory_term_string(self, term_id, name):
+        self.__terms[term_id] = lambda: Function(name)
+
+    def theory_term_compound(self, term_id, name_id_or_type, arguments):
+        self.__terms[term_id] = lambda: Function(self.__terms[name_id_or_type]().name, [self.__terms[i]() for i in arguments])
+
+    def theory_element(self, element_id, terms, condition):
+        self.__elems[element_id] = lambda: Function("elem", [Tuple_([self.__terms[i]() for i in terms]), Tuple_(sorted(set([ self.__map(lit) for lit in condition ])))])
+
+    def _theory_atom(self, atom_id_or_zero, term_id, elements):
+        self.__symbols[atom_id_or_zero] = Function("theory", [self.__terms[term_id](), Tuple_(sorted(set([ self.__elems[e]() for e in elements ])))]);
+
+    def _theory_atom_with_guard(self, atom_id_or_zero, term_id, elements, operator_id, right_hand_side_id):
+        self.__symbols[atom_id_or_zero] = Function("theory", [self.__terms[term_id](), Tuple_(sorted(set([ self.__elems[e]() for e in elements ]))), self.__terms[operator_id](), self.__terms[right_hand_side_id]()]);
+
+    def end_step(self):
+        self.__reified.append(Function("end_step", []))
+
+    def finalize(self):
+        for name, args in self.__delayed:
+            if name.startswith("theory_atom"):
+                getattr(self, "_" + name)(*args)
+        for name, args in self.__delayed:
+            if not name.startswith("theory_atom"):
+                getattr(self, "_" + name)(*args)
+        return Context(self.__reified)
+
+class Context:
+    def __init__(self, reified):
+        self.__reified = reified[:]
+
+    def get(self):
+        return self.__reified
+
+class MyObserver:
+#    def rule(choice, head, body):
+#        import pdb
+#        pdb.set_trace()
+    def rule(self, choice, head, body):
+        print('rule {0} -> {1} {2}'.format(choice, head, body))
+    def weight_rule(self, choice, head, lower_bound, body):
+        print('weight rule {0} -> {1} {2} {3}'.format(choice, head, lower_bound, body))
+    def heuristic(self, atom, type, bias, priority, condition):
+        print('heuristic {0} -> {1} {2} {3} {4}'.format(atom, type, bias, priority, condition))
+    def output_atom(self, symbol, atom):
+        print('atom {0} -> {1}'.format(symbol, atom))
+    def output_csp(self, symbol, value, condition):
+        print('csp {0} -> {1} {2} {3}'.format(symbol, value, condition))
+    def output_term(self, symbol, condition):
+        print('term {0} -> {1}'.format(symbol, condition))
+    def minimize(self, priority, literals):
+        print('minimize {0} -> {1}'.format(priority, literals))
+    def project(self, atoms):
+        print('project {0}'.format(atoms))
+    def theory_term_number(self, term_id, number):
+        print('theory {0} -> {1}'.format(term_id, number))
+    def theory_term_compound(self, term_id, name_id_or_type, arguments):
+        print('theory {0} -> {1} {2}'.format(term_id, name_id_or_type, arguments))
+    def external(self, atom, value):
+        print('external {0} -> {1}'.format(atom, value))
+
+#        import pdb
+#        pdb.set_trace()
+        
+
+class Propagator:
+    def init(self, init):
+        for atom in init.symbolic_atoms:
+            print('solver {0} -> {1} ({2})'.format(atom.literal, atom.symbol, init.solver_literal(atom.literal)))
+        for atom in init.theory_atoms:
+            print('theory {0} -> {1} ({2})'.format(atom.literal, atom.symbol, init.solver_literal(atom.literal)))
+    # def propagate(self, control, changes):
+    #     import pdb
+    #     pdb.set_trace()
+    # def undo(self, thread, assignment):
+    #     import pdb
+    #     pdb.set_trace()
+    # def check(self, control):
+    #     import pdb
+    #     pdb.set_trace()
+    # def decide(self, thread, assignment, fallback):
+    #     import pdb
+    #     pdb.set_trace()
 
 class PyclingoDriver(object):
     def __init__(self, cores=True, asp=None):
@@ -627,11 +790,20 @@ class PyclingoDriver(object):
         self.control.load(os.path.join(parent_dir, "display.lp"))
         timer.phase("load")
 
+        sym = {}
+        for atom in self.control.symbolic_atoms:
+            sym[atom.literal] = atom.symbol
+        obs = Observer(sym=sym)
+        self.control.register_observer(obs)
+#        self.control.register_propagator(Propagator())
         # Grounding is the first step in the solve -- it turns our facts
         # and first-order logic rules into propositional logic.
         self.control.ground([("base", [])])
         timer.phase("ground")
-
+#        for atom in self.control.symbolic_atoms:
+#            print('main {0} -> {1}'.format(atom.literal, atom.symbol))
+        ctx = obs.finalize()
+        pprint.pprint(ctx.get())
         # With a grounded program, we can run the solve.
         result = Result()
         models = []  # stable models if things go well
@@ -660,6 +832,7 @@ class PyclingoDriver(object):
                 (sym.name, [stringify(a) for a in sym.arguments])
                 for sym in best_model
             ]
+            pprint.pprint(tuples)
             answers = builder.build_specs(tuples)
             result.answers.append((list(min_cost), 0, answers))
 
@@ -1670,8 +1843,9 @@ class SpecBuilder(object):
         pkg_class = spack.repo.path.get_pkg_class(pkg)
 
         variant = self._specs[pkg].variants.get(name)
-        if variant:
-            # it's multi-valued
+        if variant and (type(variant) == spack.variant.SingleValuedVariant):
+            variant.value = value
+        elif variant:
             variant.append(value)
         else:
             variant = pkg_class.variants[name].make_variant(value)
